@@ -1,14 +1,11 @@
 ---
-title: API Reference
+title: Puhelinkysely.fi API-rajapintakuvaus
 
 language_tabs: # must be one of https://git.io/vQNgJ
+  - php
   - shell
-  - ruby
-  - python
-  - javascript
 
 toc_footers:
-  - <a href='#'>Sign Up for a Developer Key</a>
   - <a href='https://github.com/lord/slate'>Documentation Powered by Slate</a>
 
 includes:
@@ -17,223 +14,261 @@ includes:
 search: true
 ---
 
-# Introduction
+# Johdanto
 
-Welcome to the Kittn API! You can use our API to access Kittn API endpoints, which can get information on various cats, kittens, and breeds in our database.
+Tervetuloa [puhelinkysely.fi-palvelun](https://puhelinkysely.fi/) API-rajapintakuvaukseen. Tämän rajapinnan kautta voit tällä hetkellä lähettää ennalta luotuja kyselyitä soitettavaksi ja tulevaisuudessa hakea kyselyiden vastaustietoja ja soittaa ad hoc -kyselyitä.
 
-We have language bindings in Shell, Ruby, and Python! You can view code examples in the dark area to the right, and you can switch the programming language of the examples with the tabs in the top right.
+Koodiesimerkit on esitetty PHP-kielellä sekä komentorivikäskyinä, mutta REST-tyyppinen rajapinta on käytettävissä myös muilla kielillä ja skripteillä oman tarpeesi mukaisesti. Tällä hetkellä emme tarjoa valmiita kielikohtaisia API-kirjastoja, vaan rajapinnan käytön toteutus on omalla vastuullasi.
 
-This example API documentation page was created with [Slate](https://github.com/lord/slate). Feel free to edit it and use it as a base for your own API's documentation.
+# Autentikointi
 
-# Authentication
+> API-tunnistautuminen jokaisen pyynnön yhteydessä:
 
-> To authorize, use this code:
+```php
+<?php
 
-```ruby
-require 'kittn'
+$apiKey = 'APIAVAIN';
+$apiSecret = 'SALAISUUS';
+$apiNonce = 123;
 
-api = Kittn::APIClient.authorize!('meowmeowmeow')
-```
+$payload = new stdClass(); // määrittele pyyntösi data
+$requestData = json_encode($payload);
 
-```python
-import kittn
+$signature = hash_hmac("sha256", $requestData . $apiNonce, $apiSecret);
 
-api = kittn.authorize('meowmeowmeow')
+// lähetä pyyntö
+$options = array(
+    'http' => array(
+        'header'  => "Content-Type: application/json\r\n"
+                   . "Authorization: APIAVAIN\r\n"
+                   . "X-Phonepoll-Nonce: {$apiNonce}\r\n"
+                   . "X-Phonepoll-Signature: {$signature}\r\n",
+        'method'  => 'POST',
+        'content' => $requestData
+    )
+);
+$context  = stream_context_create($options);
+$result = file_get_contents("https://puhelinkysely.fi/api/v1/call", false, $context);
+
+?>
 ```
 
 ```shell
-# With shell, you can just pass the correct header with each request
-curl "api_endpoint_here"
-  -H "Authorization: meowmeowmeow"
+curl 'https://puhelinkysely.fi/api/v1/call'
+  -X 'POST'
+  -H 'Authorization: APIAVAIN'
+  -H 'X-Phonepoll-Nonce: 123'
+  -H 'X-Phonepoll-Signature: ALLEKIRJOITUS'
 ```
 
-```javascript
-const kittn = require('kittn');
+> Korvaa APIAVAIN ja SALAISUUS/ALLEKIRJOITUS omalla API-avaimellasi ja salaisuutesi avulla lasketulla allekirjoituksella.
 
-let api = kittn.authorize('meowmeowmeow');
-```
+API-rajapintamme käyttää käyttäjän kaikkien pyyntöjen tunnistamiseen API-avaimia ja viestien vahventamiseen HMAC-SHA256-autentikointia. 
 
-> Make sure to replace `meowmeowmeow` with your API key.
-
-Kittn uses API keys to allow access to the API. You can register a new Kittn API key at our [developer portal](http://example.com/developers).
-
-Kittn expects for the API key to be included in all API requests to the server in a header that looks like the following:
-
-`Authorization: meowmeowmeow`
-
-<aside class="notice">
-You must replace <code>meowmeowmeow</code> with your personal API key.
+<aside class="warning">
+Saat API-avaimen ja autentikoinnin salaisuuden On-Time-yhteyshenkilöltäsi. Pidä niistä hyvää huolta, sillä vastaat täysimääräisesti sinulle myönnetyillä tunnuksilla tehdyistä pyynnöistä myös silloin kun ne ovat joutuneet vääriin käsiin asiakkaan huolimattomuudesta tai tahallisuudesta johtuen.
 </aside>
 
-# Kittens
+`Authorization: APIAVAIN`
 
-## Get All Kittens
+Jokaisessa API-kutsussa tulee olla käyttäjän tunnistava <code>APIAVAIN</code>.
 
-```ruby
-require 'kittn'
+`X-Phonepoll-Nonce`
 
-api = Kittn::APIClient.authorize!('meowmeowmeow')
-api.kittens.get
-```
+Jokaisessa API-kutsussa tulee olla tiukasti kasvava nonce-arvo replay-hyökkäysten estämiseksi. Jos teet pyyntöjä enintään sekunnin välein, esimerkiksi Unixin epoch-aikaleima soveltuu nonceksi. Se voi olla myös pyyntöjen järjestysluku. Samaa noncea ei hyväksytä kahdesti eikä edellistä pienempää noncea.
 
-```python
-import kittn
+`X-Phonepoll-Signature`
 
-api = kittn.authorize('meowmeowmeow')
-api.kittens.get()
+Jokaisen API-kutsun sisällön vahventaa allekirjoitus, joka lasketaan HMAC-SHA256-algoritmillä. Liitä yhdeksi merkkijonoksi pyyntösi JSON-muotoinen POST-data sekä nonce ja aja merkkijono salaisuutesi kanssa HMAC-SHA256-algoritmin läpi.
+
+
+# Kyselyt
+
+## Soita kysely
+
+```php
+<?php
+
+// numeron, josta puhelut lähtevät, täytyy kuulua tilillesi
+$fromTelno = "+358942450212";
+
+// kyselyn tunnisteen täytyy olla tilillesi kuuluva kysely
+$pollId = 123;
+
+// soitettavat puhelinnumerot, joihin sinulla täytyy olla oikeus soittaa
+$numbers = Array();
+
+// määrittele pyynnön data
+$payload = new stdClass();
+$payload->poll_id = $pollId;
+$payload->numbers = $numbers;
+$payload->from_telno = $fromTelno;
+$requestData = json_encode($payload);
+
+$signature = hash_hmac("sha256", $requestData . $apiNonce, $apiSecret);
+
+$options = array(
+    'http' => array(
+        'header'  => "Content-Type: application/json\r\n"
+                   . "Authorization: APIAVAIN\r\n"
+                   . "X-Phonepoll-Nonce: {$apiNonce}\r\n"
+                   . "X-Phonepoll-Signature: {$signature}\r\n",
+        'method'  => 'POST',
+        'content' => $requestData
+    )
+);
+$context  = stream_context_create($options);
+$result = file_get_contents("https://puhelinkysely.fi/api/v1/call", false, $context);
+if ($result === FALSE) { /* Käsittele virhe */ }
+
+// käsittele vastausdata
+var_dump($result);
+
+?>
 ```
 
 ```shell
-curl "http://example.com/api/kittens"
-  -H "Authorization: meowmeowmeow"
+curl "https://puhelinkysely.fi/api/v1/call"
+  -X 'POST'
+  -H 'Authorization: APIAVAIN'
+  -H 'X-Phonepoll-Nonce: 123'
+  -H 'X-Phonepoll-Signature: ALLEKIRJOITUS'
 ```
 
-```javascript
-const kittn = require('kittn');
+> Oheinen pyyntö palauttaa seuraavankaltaisen JSON-muotoisen vastauksen:
 
-let api = kittn.authorize('meowmeowmeow');
-let kittens = api.kittens.get();
+```json
+{
+  "status": "success",
+  "error": NULL,
+  "poll_id": 123,
+  "run_id": 321,
+  "from_telno": "+358942450212",
+  "calls": [
+    {
+      "call_id": 444,
+      "call_telno": "+358401234567",
+      "call_status": "queued"
+    },
+    {
+      "call_id": 445,
+      "call_telno": "+358401234568",
+      "call_status": "queued"
+    }
+  ]
+}
 ```
 
-> The above command returns JSON structured like this:
+Tällä pyynnöllä voit soittaa ennaltamääritellyn kyselyn yhteen tai useampaan puhelinnumeroon.
+
+### HTTP-pyyntö
+
+`POST https://puhelinkysely.fi/api/v1/call`
+
+### Pyynnön parametrit
+
+Parametri | Tyyppi | Kuvaus
+--------- | ------ | ------
+poll_id | Integer | Soitettavan kyselyn tunniste
+numbers | Array | Soitettavat puhelinnumerot kansainvälisessä E.164-muodossa.
+from_telno | String | Numero, josta kyselyt soitetaan. Numeron täytyy olla määritelty tiliisi. Jos parametri puuttuu, käytetään tilisi oletusnumeroa.
+
+### Pyynnön vastaus
+
+Vastaus sisältää soitettavien puheluiden yksilöllisen tunnisteen ja kyselyajon tunnisteen.
+
+Parametri | Tyyppi | Kuvaus
+--------- | ------ | ------
+status | String | Joko <code>success</code> tai <code>error</code> riippuen pyynnön onnistumisesta.
+error | String | Virhetilanteen koodi.
+poll_id | Integer | Soitettavan kyselyn tunniste.
+run_id | Integer | Kyselyajon tunniste.
+from_telno | String | Numero, josta kyselyt soitetaan.
+calls | Array | Soitettavat puhelut.
+call_id | Integer | Soitettavan puhelun tunniste.
+call_telno | String | Soitettava puhelinnumero. Vertaamalla tähän voit tallentaa oikean puhelun tunnisteen itsellesi.
+call_status | String | Aina <code>queued</code>, jos kyseisen numeron lisääminen jonoon onnistui. Jos <code>failed</code>, jonoon lisääminen epäonnistui todennäköisimmin virheellisesti muotoillun puhelinnumeron vuoksi.
+
+## Hae kyselyt
+
+```php
+<?php
+
+$signature = hash_hmac("sha256", $apiNonce, $apiSecret);
+
+$options = array(
+    'http' => array(
+        'header'  => "Content-Type: application/json\r\n"
+                   . "Authorization: APIAVAIN\r\n"
+                   . "X-Phonepoll-Nonce: {$apiNonce}\r\n"
+                   . "X-Phonepoll-Signature: {$signature}\r\n",
+        'method'  => 'GET'
+    )
+);
+$context = stream_context_create($options);
+$result = file_get_contents("https://puhelinkysely.fi/api/v1/polls", false, $context);
+if ($result === FALSE) { /* Käsittele virhe */ }
+
+// käsittele vastausdata
+var_dump($result);
+
+?>
+```
+
+```shell
+curl "https://puhelinkysely.fi/api/v1/polls"
+  -X 'GET'
+  -H 'Authorization: APIAVAIN'
+  -H 'X-Phonepoll-Nonce: 123'
+  -H 'X-Phonepoll-Signature: ALLEKIRJOITUS'
+```
+
+> Oheinen pyyntö palauttaa seuraavankaltaisen JSON-muotoisen vastauksen:
 
 ```json
 [
   {
-    "id": 1,
-    "name": "Fluffums",
-    "breed": "calico",
-    "fluffiness": 6,
-    "cuteness": 7
-  },
-  {
-    "id": 2,
-    "name": "Max",
-    "breed": "unknown",
-    "fluffiness": 5,
-    "cuteness": 10
+    "poll_id": 123,
+    "poll_title": "Esimerkkikysely",
+    "questions": [
+      {
+        "question": "Oletko samaa mieltä?",
+        "choices": [
+          {
+            "choiceText": "Jos kyllä, paina yksi.",
+            "choiceSelection": "Kyllä"
+          },
+          {
+            "choiceText": "Jos et, paina kaksi.",
+            "choiceSelection": "Ei"
+          }
+        ]
+      }
+    ]
   }
-]
+]      
 ```
 
-This endpoint retrieves all kittens.
+Tällä pyynnöllä voit hakea kaikki tilillesi määritellyt kyselyt. Pyynnön palauttamaa kyselyn tunnistetta voi käyttää parametrina [kyselyiden soitossa](#soita-kysely).
 
-### HTTP Request
+### HTTP-pyyntö
 
-`GET http://example.com/api/kittens`
+`GET https://puhelinkysely.fi/api/v1/polls`
 
-### Query Parameters
+### Pyynnön parametrit
 
-Parameter | Default | Description
---------- | ------- | -----------
-include_cats | false | If set to true, the result will also include cats.
-available | true | If set to false, the result will include kittens that have already been adopted.
+Pyyntö ei odota parametreja, vaan palauttaa kaikki tilillesi määritellyt kyselyt.
 
-<aside class="success">
-Remember — a happy kitten is an authenticated kitten!
-</aside>
+### Pyynnön vastaus
 
-## Get a Specific Kitten
+Vastaus sisältää kaikki tilillesi määritellyt kyselyt.
 
-```ruby
-require 'kittn'
-
-api = Kittn::APIClient.authorize!('meowmeowmeow')
-api.kittens.get(2)
-```
-
-```python
-import kittn
-
-api = kittn.authorize('meowmeowmeow')
-api.kittens.get(2)
-```
-
-```shell
-curl "http://example.com/api/kittens/2"
-  -H "Authorization: meowmeowmeow"
-```
-
-```javascript
-const kittn = require('kittn');
-
-let api = kittn.authorize('meowmeowmeow');
-let max = api.kittens.get(2);
-```
-
-> The above command returns JSON structured like this:
-
-```json
-{
-  "id": 2,
-  "name": "Max",
-  "breed": "unknown",
-  "fluffiness": 5,
-  "cuteness": 10
-}
-```
-
-This endpoint retrieves a specific kitten.
-
-<aside class="warning">Inside HTML code blocks like this one, you can't use Markdown, so use <code>&lt;code&gt;</code> blocks to denote code.</aside>
-
-### HTTP Request
-
-`GET http://example.com/kittens/<ID>`
-
-### URL Parameters
-
-Parameter | Description
---------- | -----------
-ID | The ID of the kitten to retrieve
-
-## Delete a Specific Kitten
-
-```ruby
-require 'kittn'
-
-api = Kittn::APIClient.authorize!('meowmeowmeow')
-api.kittens.delete(2)
-```
-
-```python
-import kittn
-
-api = kittn.authorize('meowmeowmeow')
-api.kittens.delete(2)
-```
-
-```shell
-curl "http://example.com/api/kittens/2"
-  -X DELETE
-  -H "Authorization: meowmeowmeow"
-```
-
-```javascript
-const kittn = require('kittn');
-
-let api = kittn.authorize('meowmeowmeow');
-let max = api.kittens.delete(2);
-```
-
-> The above command returns JSON structured like this:
-
-```json
-{
-  "id": 2,
-  "deleted" : ":("
-}
-```
-
-This endpoint deletes a specific kitten.
-
-### HTTP Request
-
-`DELETE http://example.com/kittens/<ID>`
-
-### URL Parameters
-
-Parameter | Description
---------- | -----------
-ID | The ID of the kitten to delete
-
+Parametri | Tyyppi | Kuvaus
+--------- | ------ | ------
+poll_id | Integer | Kyselyn tunniste.
+poll_title | String | Kyselyn otsikko.
+questions | Array | Kyselyn kysymykset.
+question | String | Kysymysteksti.
+choices | Array | Kysymyksen vastausvaihtoehdot.
+choiceText | String | Vastausvaihtoehdon teksti.
+choiceSelection | String | Vastausvaihtoehdon raportille tuleva otsake.
